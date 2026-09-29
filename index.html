@@ -16,7 +16,9 @@ button.main{background:var(--acc);color:#04202a}
 #intro{position:fixed;inset:0;z-index:9;background:#0b1220;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px}
 #intro h1{margin:0;font-size:28px;color:var(--acc)}
 #intro p{max-width:420px;margin:0;line-height:1.5;color:#b6c8e0}
-</style></head><body>
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+</head><body>
 <video id="v1" autoplay muted playsinline></video>
 <video id="v2" autoplay muted playsinline></video>
 <canvas id="gl"></canvas>
@@ -35,6 +37,10 @@ button.main{background:var(--acc);color:#04202a}
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
+// ====== CONFIG ======
+const TOPIC='hackaton-sismolens-TUNOMBRE/piso3';   // debe ser igual al del ESP32
+const BROKER='wss://broker.hivemq.com:8884/mqtt';
+
 const $=id=>document.getElementById(id), rnd=(a,b)=>a+Math.random()*(b-a), R=THREE.MathUtils.degToRad;
 const renderer=new THREE.WebGLRenderer({canvas:$('gl'),antialias:true,alpha:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setScissorTest(true);
@@ -43,22 +49,57 @@ cam.position.set(0,1.6,0);scene.add(cam);
 scene.add(new THREE.HemisphereLight(0xcfe8ff,0x223344,1.1));
 const sun=new THREE.DirectionalLight(0xffffff,.8);sun.position.set(5,10,3);scene.add(sun);
 const city=new THREE.Group();scene.add(city);
-const grid=new THREE.GridHelper(80,40,0x22d3ee,0x1e4a66);grid.material.transparent=true;grid.material.opacity=.55;city.add(grid);
-for(let i=0;i<16;i++){const a=i/16*Math.PI*2+.2,r=rnd(20,32),h=rnd(4,14);
-  const m=new THREE.Mesh(new THREE.BoxGeometry(rnd(3,6),h,rnd(3,6)),new THREE.MeshLambertMaterial({color:0x3b4a63,transparent:true,opacity:.9}));
+
+// ====== Suelo ======
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(80,80),new THREE.MeshBasicMaterial({color:0x1b2432,transparent:true,opacity:.45,depthWrite:false}));
+ground.rotation.x=-Math.PI/2;ground.position.y=-.01;city.add(ground);
+const grid=new THREE.GridHelper(80,40,0x22d3ee,0x1e4a66);grid.material.transparent=true;grid.material.opacity:.4;grid.material.opacity=.4;city.add(grid);
+
+// ====== Fachadas con ventanas (textura dibujada en canvas) ======
+function facade(cols,rows,wall,lit,cw,ch){
+  const c=document.createElement('canvas');c.width=cols*cw;c.height=rows*ch;const g=c.getContext('2d');
+  g.fillStyle=wall;g.fillRect(0,0,c.width,c.height);
+  for(let r=0;r<rows;r++)for(let k=0;k<cols;k++){
+    const x=k*cw+cw*.18,y=r*ch+ch*.2,w=cw*.64,h=ch*.6;
+    g.fillStyle='#2a3140';g.fillRect(x-3,y-3,w+6,h+6);                 // marco
+    if(Math.random()<lit){g.fillStyle='#ffd88a';g.fillRect(x,y,w,h);}   // ventana encendida
+    else{const gr=g.createLinearGradient(x,y,x+w,y+h);gr.addColorStop(0,'#7fb3d9');gr.addColorStop(1,'#1e3a5f');g.fillStyle=gr;g.fillRect(x,y,w,h);}
+    g.fillStyle='rgba(255,255,255,.28)';g.fillRect(x,y,w,2);            // reflejo
+    g.fillStyle='#2a3140';g.fillRect(x+w/2-1,y,2,h);                    // divisor
+  }
+  g.fillStyle='rgba(0,0,0,.18)';for(let r=0;r<rows;r++)g.fillRect(0,(r+1)*ch-4,c.width,4); // losas
+  const t=new THREE.CanvasTexture(c);t.anisotropy=4;return t;
+}
+const roofColor=0x6b7079;
+function boxMats(side,cap){return [side,side,cap,cap,side,side];}
+
+// Edificios vecinos
+const WALLS=['#8d95a3','#a0876f','#7c8a99','#b5aa9a','#9a8f8a'];
+for(let i=0;i<16;i++){const a=i/16*Math.PI*2+.2,r=rnd(20,32),h=rnd(4,14),w=rnd(3,6),d=rnd(3,6);
+  const rows=Math.max(2,Math.round(h/1.6)),cols=Math.max(2,Math.round(w/1.25));
+  const side=new THREE.MeshLambertMaterial({map:facade(cols,rows,WALLS[i%WALLS.length],.25,64,48)});
+  const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),boxMats(side,new THREE.MeshLambertMaterial({color:roofColor})));
   m.position.set(Math.sin(a)*r,h/2,-Math.cos(a)*r);city.add(m);}
-// Edificio objetivo (6 pisos)
+
+// ====== Edificio objetivo (6 pisos) ======
 const FL=6,FH=1.6,BW=5,TZ=-14,floors=[];
-for(let i=0;i<FL;i++){const g=new THREE.BoxGeometry(BW,FH-.06,BW);
-  const m=new THREE.Mesh(g,new THREE.MeshLambertMaterial({color:0x2dd4bf,transparent:true,opacity:.88}));
-  m.add(new THREE.LineSegments(new THREE.EdgesGeometry(g),new THREE.LineBasicMaterial({color:0xffffff})));
-  m.userData={y0:FH/2+i*FH+.03};m.position.set(0,m.userData.y0,TZ);city.add(m);floors.push(m);}
-// Polvo
+const slab=new THREE.Mesh(new THREE.BoxGeometry(7.5,.12,7.5),new THREE.MeshLambertMaterial({color:0x8a8f98}));
+slab.position.set(0,.06,TZ);city.add(slab);
+for(let i=0;i<FL;i++){
+  const side=new THREE.MeshLambertMaterial({map:facade(4,1,i===0?'#a9a398':'#c9c2b6',i===0?.6:.35,128,96)});
+  const cap=new THREE.MeshLambertMaterial({color:roofColor});
+  const m=new THREE.Mesh(new THREE.BoxGeometry(BW,FH-.06,BW),boxMats(side,cap));
+  m.userData={y0:FH/2+i*FH+.09,side:side};m.position.set(0,m.userData.y0,TZ);city.add(m);floors.push(m);}
+const ac=new THREE.Mesh(new THREE.BoxGeometry(1.2,.5,1.2),new THREE.MeshLambertMaterial({color:0x5b616b}));
+ac.position.set(1,1.02,-.8);floors[FL-1].add(ac);             // equipo en la azotea
+
+// ====== Polvo ======
 const N=400,pp=new Float32Array(N*3),pv=new Float32Array(N*3),pg=new THREE.BufferGeometry();
 pg.setAttribute('position',new THREE.BufferAttribute(pp,3));
 const dust=new THREE.Points(pg,new THREE.PointsMaterial({color:0xcbb99a,size:.4,transparent:true,opacity:0,depthWrite:false}));
 dust.frustumCulled=false;city.add(dust);
-// HUD en el mundo (se ve en ambos ojos)
+
+// ====== HUD en el mundo (se ve en ambos ojos) ======
 const hc=document.createElement('canvas');hc.width=640;hc.height=400;const hx=hc.getContext('2d');
 const htex=new THREE.CanvasTexture(hc);
 const hud=new THREE.Mesh(new THREE.PlaneGeometry(.9,.5625),new THREE.MeshBasicMaterial({map:htex,transparent:true,depthTest:false}));
@@ -68,67 +109,96 @@ const rtex=new THREE.CanvasTexture(rc);
 const ret=new THREE.Mesh(new THREE.PlaneGeometry(.12,.12),new THREE.MeshBasicMaterial({map:rtex,transparent:true,depthTest:false}));
 ret.position.set(0,0,-1);ret.renderOrder=11;cam.add(ret);
 
-// Estado
+// ====== Estado ======
 let state='idle',t=0,idleT=0,dwell=0,failed=false,failT=0,hist=[],acc=0,dustAge=0,vr=false;
-let curA=0,curD=.1,curF=2.1,preA=0,preD=0,postA=0,postD=0,realA=0;
+let curA=0,curD=.1,curF=2.1,preA=0,preD=0,postA=0,realA=0;
+let lastMsg=0,tilt0=null,forceSim=false;
+const isLive=()=>performance.now()-lastMsg<3000;
 const ray=new THREE.Raycaster();
 
-function startQuake(){if(state!=='idle')return;state='quake';t=0;hist=[];failed=false;preA=postA=0;dwell=0;}
-function reset(){state='idle';t=0;dwell=0;failed=false;hist=[];idleT=0;dust.material.opacity=0;city.position.set(0,0,0);
-  floors.forEach(f=>{const u=f.userData;u.fall=false;f.position.set(0,u.y0,TZ);f.rotation.set(0,0,0);f.material.color.set(0x2dd4bf)});alpha0=alpha;}
+function startQuake(sim){if(state!=='idle')return;state='quake';forceSim=!!sim;t=0;hist=[];failed=false;preA=postA=0;dwell=0;}
+function reset(){state='idle';t=0;dwell=0;failed=false;hist=[];idleT=0;forceSim=false;tilt0=null;
+  dust.material.opacity=0;city.position.set(0,0,0);
+  floors.forEach(f=>{const u=f.userData;u.fall=false;f.position.set(0,u.y0,TZ);f.rotation.set(0,0,0);u.side.color.setRGB(1,1,1)});alpha0=alpha;}
+
+// ====== MQTT (sensores reales) ======
+try{
+  const client=mqtt.connect(BROKER);
+  client.on('connect',()=>client.subscribe(TOPIC));
+  client.on('message',(_,m)=>{
+    let d;try{d=JSON.parse(m.toString());}catch(e){return;}
+    lastMsg=performance.now();
+    if(tilt0===null)tilt0=d.tilt;                       // calibra con la maqueta quieta
+    if(state==='done')return;
+    curA=d.a;
+    curD=Math.abs(d.tilt-tilt0)*1.5;                    // deriva aproximada (calibra este factor)
+    if(state==='idle'&&d.a>0.05)startQuake(false);      // el sensor dispara la animación
+  });
+}catch(e){console.warn('MQTT no disponible',e);}
 
 function step(dt){
   cam.updateMatrixWorld();ray.setFromCamera({x:0,y:0},cam);
   const hit=state==='idle'&&ray.intersectObjects(floors,false).length>0;
-  if(state==='idle'){dwell=hit?dwell+dt:Math.max(0,dwell-dt*2);if(dwell>=3)startQuake();idleT+=dt;}
-  floors.forEach(f=>f.material.emissive.setHex(hit?0x0a6a80:0));
+  if(state==='idle'){dwell=hit?dwell+dt:Math.max(0,dwell-dt*2);if(dwell>=3)startQuake(!isLive());idleT+=dt;}
+  const live=isLive()&&!forceSim;
   let amp=0;
   if(state==='quake'){
     t+=dt;
-    amp=failed?(t<10?.42:.42*Math.exp(-(t-10))):.03+.09*t;
-    curA=amp*(Math.sin(t*13)+.5*Math.sin(t*29+1)+.4*(Math.random()-.5));
-    curD=failed?Math.min(12,3+(t-failT)*2.2):amp*8.8;
-    curF=failed?Math.max(.8,2.1-(t-failT)*1.5):2.1-curD*.02;
+    if(!live){                                          // simulación
+      amp=failed?(t<10?.42:.42*Math.exp(-(t-10))):.03+.09*t;
+      curA=amp*(Math.sin(t*13)+.5*Math.sin(t*29+1)+.4*(Math.random()-.5));
+      curD=failed?Math.min(12,3+(t-failT)*2.2):amp*8.8;
+      curF=failed?Math.max(.8,2.1-(t-failT)*1.5):2.1-curD*.02;
+    }else{                                              // datos reales del sensor
+      amp=Math.min(.42,Math.abs(curA)*3+.03);
+      curF=Math.max(.8,2.1-curD*.12);                   // estimación; con FFT sería real
+    }
     if(!failed&&curD>=3){failed=true;failT=t;preD=curD;
       for(let i=0;i<N;i++){pp.set([rnd(-2.5,2.5),rnd(0,1.5),TZ+rnd(-2.5,2.5)],i*3);pv.set([rnd(-1,1),rnd(.5,2.5),rnd(-1,1)],i*3);}dustAge=0;}
     if(failed)postA=Math.max(postA,Math.abs(curA));else preA=Math.max(preA,Math.abs(curA));
     if(t>=13){state='done';amp=0;}
-  }else if(state==='idle'){curA=realA+.003*(Math.random()-.5)*2;curD=.1;curF=2.1;}
+  }else if(state==='idle'){
+    if(!live){curA=realA+.003*(Math.random()-.5)*2;curD=.1;}
+    curF=2.1;
+  }
   acc+=dt;if(acc>=.05&&state!=='done'){acc=0;hist.push({t:state==='idle'?idleT:t,a:curA});
     if(state==='idle')while(hist[0]&&hist[0].t<idleT-7)hist.shift();}
   // Edificio
-  floors.forEach((f,i)=>{const u=f.userData;
+  const k=Math.min(1,curD/3);
+  floors.forEach((f,i)=>{const u=f.userData,s=u.side;
     if(failed&&i>=2&&!u.fall&&t>=failT+(i-2)*.3){u.fall=true;u.vy=0;u.vx=rnd(-1,1)*(i-1)*.5;u.vz=rnd(-.5,.5);u.wz=rnd(-1,1);u.wx=rnd(-.5,.5);}
     if(u.fall){u.vy-=9.8*dt;f.position.y+=u.vy*dt;f.position.x+=u.vx*dt;f.position.z+=u.vz*dt;f.rotation.z+=u.wz*dt;f.rotation.x+=u.wx*dt;
       const fy=.35+(i-2)*.2;if(f.position.y<fy){f.position.y=fy;u.vy*=-.15;u.vx*=.7;u.vz*=.7;u.wz*=.7;u.wx*=.7;}}
     else if(state==='quake')f.position.x=Math.sin(t*12+i)*Math.min(amp,.42)*.35*(i+1);
-    f.material.color.setHSL(failed?0:.45*(1-Math.min(1,curD/3)),.75,.5);});
+    if(failed)s.color.setRGB(1,.42,.36);else s.color.setRGB(1,1-.45*k,1-.7*k);   // tinte de daño
+    s.emissive.setHex(hit?0x0a6a80:0);});
   if(state==='quake'){city.position.x=Math.sin(t*25)*amp*.15;city.position.y=Math.cos(t*31)*amp*.05;}else city.position.set(0,0,0);
   if(failed){dustAge+=dt;const p=pg.attributes.position;for(let i=0;i<N*3;i++)pp[i]+=pv[i]*dt;p.needsUpdate=true;dust.material.opacity=Math.max(0,.7-dustAge*.07);}
-  drawHUD();drawRet();
+  drawHUD(live);drawRet();
 }
 
 function tx(s,x,y,sz,col,al){hx.font='600 '+sz+'px system-ui,sans-serif';hx.fillStyle=col;hx.textAlign=al||'left';hx.fillText(s,x,y);}
-function drawHUD(){
+function drawHUD(live){
   const c=hx;c.clearRect(0,0,640,400);c.fillStyle='rgba(8,16,30,.85)';c.fillRect(0,0,640,400);
   c.strokeStyle='#22d3ee';c.lineWidth=2;c.strokeRect(1,1,638,398);
   const col=state==='idle'?'#22c55e':failed?'#ef4444':'#f59e0b';
-  tx('SISMOLENS · Edificio A-3 (datos simulados)',16,28,19,'#7dd3fc');
+  tx('SISMOLENS · Edificio A-3 ('+(live?'sensor en vivo':'datos simulados')+')',16,28,19,'#7dd3fc');
   tx(state==='idle'?'ESTADO: NORMAL':failed?'FALLA DETECTADA':'SISMO EN CURSO',624,28,19,col,'right');
-  const X=16,Y=44,CW=608,CH=140,live=state==='idle';
-  const t1=live?idleT:13,t0=live?idleT-6:0,sp=t1-t0,mx=v=>X+(v-t0)/sp*CW;
+  const X=16,Y=44,CW=608,CH=140,idle=state==='idle';
+  const t1=idle?idleT:13,t0=idle?idleT-6:0,sp=t1-t0,mx=v=>X+(v-t0)/sp*CW;
   c.fillStyle='rgba(255,255,255,.05)';c.fillRect(X,Y,CW,CH);
   if(failed){const fx=mx(failT);c.fillStyle='rgba(34,211,238,.12)';c.fillRect(X,Y,fx-X,CH);c.fillStyle='rgba(239,68,68,.16)';c.fillRect(fx,Y,X+CW-fx,CH);}
   c.strokeStyle=col;c.lineWidth=2;c.beginPath();
-  hist.forEach((p,k)=>{const x=mx(p.t),y=Y+CH/2-Math.max(-1,Math.min(1,p.a/.6))*CH/2;k?c.lineTo(x,y):c.moveTo(x,y);});c.stroke();
+  hist.forEach((p,i)=>{const x=mx(p.t),y=Y+CH/2-Math.max(-1,Math.min(1,p.a/.6))*CH/2;i?c.lineTo(x,y):c.moveTo(x,y);});c.stroke();
   tx('aceleración (g)',X+6,Y+CH-6,13,'#7f93ad');
+  tx(live?'● EN VIVO':'○ simulado',X+CW-6,Y+CH-6,13,live?'#22c55e':'#7f93ad','right');
   if(failed){const fx=mx(failT);c.strokeStyle='#ef4444';c.lineWidth=2;c.beginPath();c.moveTo(fx,Y);c.lineTo(fx,Y+CH);c.stroke();
     tx('ANTES',X+6,Y+16,14,'#22d3ee');tx('DESPUÉS',X+CW-6,Y+16,14,'#f87171','right');tx('T+'+failT.toFixed(1)+' s',fx+5,Y+32,14,'#fca5a5');}
   if(!failed){
     const M=[['Aceleración',Math.abs(curA).toFixed(3)+' g'],['Deriva entre pisos',curD.toFixed(1)+' %'],['Frecuencia',curF.toFixed(1)+' Hz']];
     M.forEach((m,i)=>{const x=16+i*206;c.fillStyle='rgba(255,255,255,.06)';c.fillRect(x,200,196,100);tx(m[0],x+10,224,15,'#7f93ad');tx(m[1],x+10,272,32,'#e6f1ff');});
     tx('Sensor real del celular: '+realA.toFixed(3)+' g',16,330,16,'#7dd3fc');
-    tx(state==='idle'?'Mira el edificio resaltado 3 s para iniciar el sismo':'Umbral de falla: deriva ≥ 3.0 %',16,368,17,'#e6f1ff');
+    tx(idle?'Mira el edificio resaltado 3 s para iniciar el sismo':'Umbral de falla: deriva ≥ 3.0 %',16,368,17,'#e6f1ff');
   }else{
     const rows=[['','ANTES','DESPUÉS'],['Aceleración pico',preA.toFixed(2)+' g',postA.toFixed(2)+' g'],['Deriva entre pisos',preD.toFixed(1)+' %',curD.toFixed(1)+' %'],
       ['Frecuencia natural','2.1 Hz',curF.toFixed(1)+' Hz'],['Esfuerzo cortante',(preD*11).toFixed(0)+' MPa',(curD*11).toFixed(0)+' MPa']];
@@ -143,7 +213,7 @@ function drawRet(){rx.clearRect(0,0,128,128);rx.lineWidth=4;rx.strokeStyle='rgba
   if(dwell>0){rx.strokeStyle='#22d3ee';rx.lineWidth=8;rx.beginPath();rx.arc(64,64,34,-Math.PI/2,-Math.PI/2+Math.min(1,dwell/3)*Math.PI*2);rx.stroke();}
   rtex.needsUpdate=true;}
 
-// Orientación (giroscopio) o arrastre
+// ====== Orientación (giroscopio) o arrastre ======
 let gyro=false,alpha=0,beta=0,gamma=0,alpha0=0,yaw=0,pitch=0;
 addEventListener('deviceorientation',e=>{if(e.alpha==null)return;gyro=true;alpha=e.alpha;beta=e.beta;gamma=e.gamma;});
 addEventListener('devicemotion',e=>{const a=e.accelerationIncludingGravity;if(!a||a.x==null)return;
@@ -161,7 +231,7 @@ addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY};
 addEventListener('pointermove',e=>{if(!drag||gyro)return;yaw-=(e.clientX-drag.x)*.005;pitch=Math.max(-1.2,Math.min(1.2,pitch-(e.clientY-drag.y)*.005));drag={x:e.clientX,y:e.clientY};});
 addEventListener('pointerup',()=>{drag=null;if(hold){clearTimeout(hold);hold=null;if(vr&&state==='done')reset();}});
 
-// Cámara, estéreo y permisos
+// ====== Cámara, estéreo y permisos ======
 let stream=null;
 async function toggleAR(on){
   if(on){try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
@@ -177,7 +247,7 @@ async function start(ar){
   $('intro').style.display='none';setTimeout(()=>{alpha0=alpha;},500);if(ar)toggleAR(true);
 }
 $('go1').onclick=()=>start(true);$('go2').onclick=()=>start(false);
-$('bAR').onclick=()=>toggleAR(!stream);$('bVR').onclick=toggleVR;$('bQ').onclick=startQuake;$('bR').onclick=reset;
+$('bAR').onclick=()=>toggleAR(!stream);$('bVR').onclick=toggleVR;$('bQ').onclick=()=>startQuake(true);$('bR').onclick=reset;
 
 function resize(){renderer.setSize(innerWidth,innerHeight,false);
   const a=vr?innerWidth/2/innerHeight:innerWidth/innerHeight;hud.scale.setScalar(Math.min(1,a*1.4/.9));}
