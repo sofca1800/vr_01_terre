@@ -53,7 +53,7 @@ const city=new THREE.Group();scene.add(city);
 // ====== Suelo ======
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(80,80),new THREE.MeshBasicMaterial({color:0x1b2432,transparent:true,opacity:.45,depthWrite:false}));
 ground.rotation.x=-Math.PI/2;ground.position.y=-.01;city.add(ground);
-const grid=new THREE.GridHelper(80,40,0x22d3ee,0x1e4a66);grid.material.transparent=true;grid.material.opacity:.4;grid.material.opacity=.4;city.add(grid);
+const grid=new THREE.GridHelper(80,40,0x22d3ee,0x1e4a66);grid.material.transparent=true;grid.material.opacity=.4;grid.material.opacity=.4;city.add(grid);
 
 // ====== Fachadas con ventanas (textura dibujada en canvas) ======
 function facade(cols,rows,wall,lit,cw,ch){
