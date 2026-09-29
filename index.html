@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Simulación VR - Terremoto</title>
+    <!-- Librería principal A-Frame para WebVR -->
+    <script src="https://aframe.io/releases/1.2.0/aframe.min.js"></script>
+    <style>
+      body { margin: 0; overflow: hidden; }
+    </style>
+  </head>
+  <body>
+    <!-- Escena VR con soporte estereoscópico para lentes -->
+    <a-scene vr-mode-ui="enabled: true">
+      
+      <!-- Cielo y Piso -->
+      <a-sky color="#1a1a2e"></a-sky>
+      <a-plane position="0 0 -4" rotation="-90 0 0" width="100" height="100" color="#16213e"></a-plane>
+
+      <!-- Iluminación -->
+      <a-ambient-light color="#ffffff" intensity="0.6"></a-ambient-light>
+      <a-directional-light position="-1 2 1" intensity="0.8"></a-directional-light>
+
+      <!-- CÁMARA CON CURSOR DE MIRADA (GAZE CURSOR) -->
+      <a-entity id="rig" position="0 1.6 0">
+        <a-camera look-controls>
+          <!-- El cursor activa el evento tras 1.5 segundos (fuseTimeout: 1500ms) -->
+          <a-cursor
+            id="cursor"
+            fuse="true"
+            fuse-timeout="1500"
+            position="0 0 -1"
+            geometry="primitive: ring; radiusInner: 0.02; radiusOuter: 0.03"
+            material="color: #00FFC8; shader: flat"
+            animation__click="property: scale; startEvents: click; easing: easeInCubic; dur: 150; from: 0.1 0.1 0.1; to: 1 1 1"
+            animation__fusing="property: scale; startEvents: fusing; easing: easeInCubic; dur: 1500; from: 1 1 1; to: 0.1 0.1 0.1"
+            animation__mouseleave="property: scale; startEvents: mouseleave; easing: easeInCubic; dur: 150; to: 1 1 1">
+          </a-cursor>
+        </a-camera>
+      </a-entity>
+
+      <!-- ENTORNO: EDIFICIOS DE DECORACIÓN -->
+      <a-box position="-8 4 -12" width="4" height="8" depth="4" color="#4f5b66"></a-box>
+      <a-box position="8 6 -12" width="5" height="12" depth="5" color="#343d46"></a-box>
+
+      <!-- EDIFICIO OBJETIVO (Estructura interactiva) -->
+      <a-entity id="target-building" position="0 0 -8" class="clickable">
+        <!-- Bloque Principal del Edificio -->
+        <a-box id="building-mesh" position="0 4 0" width="3.5" height="8" depth="3.5" color="#e74c3c">
+          <a-text value="FIJA LA MIRADA\nPARA ANALIZAR" position="0 0 1.8" align="center" color="#ffffff" width="6"></a-text>
+        </a-box>
+      </a-entity>
+
+      <!-- PANEL INFORMATIVO DE LA FALLA (Oculto al inicio) -->
+      <a-plane id="info-panel" position="0 2.5 -5" width="4.5" height="2.5" color="#0f3460" opacity="0.9" visible="false">
+        <a-text 
+          value="ALERTA SISTÉMICA - FALLA ESTRUCTURAL\n------------------------------------\n- Sismo Magnitud: 7.1 Mw\n- Origen: Falla Geológica\n- Aceleración Máx: 0.35g\n- Causa Colapso: Resonancia y Corte en Base\n- Estado: ESTRUCTURA DESTRUIDA" 
+          position="0 0 0.1" 
+          align="center" 
+          color="#00FFC8" 
+          width="4">
+        </a-text>
+      </a-plane>
+
+    </a-scene>
+
+    <!-- LÓGICA DE INTERACCIÓN Y ANIMACIÓN -->
+    <script>
+      const targetBuilding = document.querySelector('#target-building');
+      const buildingMesh = document.querySelector('#building-mesh');
+      const infoPanel = document.querySelector('#info-panel');
+
+      let colapsado = false;
+
+      // Evento que se dispara cuando el usuario se queda viendo el edificio durante 1.5 segundos
+      targetBuilding.addEventListener('click', function () {
+        if (colapsado) return;
+        colapsado = true;
+
+        // 1. Iniciar animación de terremoto (temblor en el eje X)
+        buildingMesh.setAttribute('animation__shake', {
+          property: 'position',
+          to: '0.3 4 0',
+          dir: 'alternate',
+          dur: 80,
+          loop: 15
+        });
+
+        // 2. Al terminar el temblor, simular el colapso (caída y rotación del edificio)
+        setTimeout(() => {
+          buildingMesh.removeAttribute('animation__shake');
+          
+          // Caída hacia el suelo
+          buildingMesh.setAttribute('animation__fall', {
+            property: 'position',
+            to: '0 0.5 0',
+            dur: 1200,
+            easing: 'easeInQuad'
+          });
+
+          // Inclinación/Colapso
+          buildingMesh.setAttribute('animation__rotate', {
+            property: 'rotation',
+            to: '15 0 -25',
+            dur: 1200,
+            easing: 'easeInQuad'
+          });
+
+          // Cambiar color a grieta/dañado
+          buildingMesh.setAttribute('material', 'color', '#552222');
+
+          // 3. Desplegar el Panel de Datos Estructurales
+          setTimeout(() => {
+            infoPanel.setAttribute('visible', 'true');
+            // Animación suave de aparición del panel
+            infoPanel.setAttribute('animation__fade', {
+              property: 'scale',
+              from: '0 0 0',
+              to: '1 1 1',
+              dur: 500,
+              easing: 'easeOutBack'
+            });
+          }, 1300);
+
+        }, 1200); // 80ms * 15 vueltas aprox = 1200ms de temblor
+      });
+    </script>
+  </body>
+</html>
